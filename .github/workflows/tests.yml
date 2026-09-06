@@ -54,7 +54,7 @@ env:
 jobs:
   phpunit:
     # We don't want the scheduled jobs to run on forks of Mautic
-    if: ('push' == 'schedule' && (github.repository == 'curiosity-tests/mautic' || github.repository == 'mautic/api-library') ) || ('push' != 'schedule')
+    if: ('push' == 'schedule' && (github.repository == 'mautic/mautic' || github.repository == 'mautic/api-library') ) || ('push' != 'schedule')
     runs-on: ubuntu-latest
 
     strategy:
@@ -79,7 +79,7 @@ jobs:
       # coverage report that is then discarded.
       COVERAGE: ${{ matrix.php-versions == '8.2'
         && matrix.db-types == 'mariadb:10.11'
-        && github.repository == 'curiosity-tests/mautic'
+        && github.repository == 'mautic/mautic'
         && ('push' == 'push' || 'push' == 'schedule') }}
 
     services:
@@ -247,7 +247,7 @@ jobs:
 
   misc:
     # We don't want the scheduled jobs to run on forks of Mautic
-    if: ('push' == 'schedule' && (github.repository == 'curiosity-tests/mautic' || github.repository == 'mautic/api-library') ) || ('push' != 'schedule')
+    if: ('push' == 'schedule' && (github.repository == 'mautic/mautic' || github.repository == 'mautic/api-library') ) || ('push' != 'schedule')
     runs-on: ubuntu-latest
 
     strategy:
