@@ -49,12 +49,12 @@ permissions:
   id-token: write
 
 env:
-  CHALK_ON: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+  CHALK_ON: ${{ inputs.leg == 'instrumented' }}
 
 jobs:
   phpunit:
     # We don't want the scheduled jobs to run on forks of Mautic
-    if: (github.event_name == 'schedule' && (github.repository == 'mautic/mautic' || github.repository == 'mautic/api-library') ) || (github.event_name != 'schedule')
+    if: ('push' == 'schedule' && (github.repository == 'curiosity-tests/mautic' || github.repository == 'mautic/api-library') ) || ('push' != 'schedule')
     runs-on: ubuntu-latest
 
     strategy:
@@ -79,8 +79,8 @@ jobs:
       # coverage report that is then discarded.
       COVERAGE: ${{ matrix.php-versions == '8.2'
         && matrix.db-types == 'mariadb:10.11'
-        && github.repository == 'mautic/mautic'
-        && (github.event_name == 'push' || github.event_name == 'schedule') }}
+        && github.repository == 'curiosity-tests/mautic'
+        && ('push' == 'push' || 'push' == 'schedule') }}
 
     services:
       database:
@@ -193,7 +193,7 @@ jobs:
 
     - name: Slack Notification if tests fail
       uses: rtCamp/action-slack-notify@33ca3be66c6f378fe1610fd1d5258632dbed5e58 # v2
-      if: ${{ failure() && github.event_name == 'schedule' }}
+      if: ${{ failure() && 'push' == 'schedule' }}
       env:
         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         SLACK_MESSAGE: 'The daily GitHub Actions tests in mautic/mautic have failed. Most likely something external has changed, like a PHP version update.'
@@ -247,7 +247,7 @@ jobs:
 
   misc:
     # We don't want the scheduled jobs to run on forks of Mautic
-    if: (github.event_name == 'schedule' && (github.repository == 'mautic/mautic' || github.repository == 'mautic/api-library') ) || (github.event_name != 'schedule')
+    if: ('push' == 'schedule' && (github.repository == 'curiosity-tests/mautic' || github.repository == 'mautic/api-library') ) || ('push' != 'schedule')
     runs-on: ubuntu-latest
 
     strategy:
@@ -391,7 +391,7 @@ jobs:
 
     - name: Slack Notification if tests fail
       uses: rtCamp/action-slack-notify@33ca3be66c6f378fe1610fd1d5258632dbed5e58 # v2
-      if: ${{ failure() && github.event_name == 'schedule' }}
+      if: ${{ failure() && 'push' == 'schedule' }}
       env:
         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         SLACK_MESSAGE: 'The daily GitHub Actions tests in mautic/mautic have failed. Most likely something external has changed, like a PHP version update.'
