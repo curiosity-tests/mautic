@@ -37,12 +37,12 @@ on:
         default: ""
   push:
     branches:
-      - '[0-9].*'
+    - '[0-9].*'
   pull_request:
   merge_group:
   schedule:
     # Run every day at 10:45 AM UTC to discover potential issues with dependencies like PHP updates etc.
-    - cron: '45 10 * * *'
+  - cron: '45 10 * * *'
 
 permissions:
   contents: read # to fetch code (actions/checkout)
@@ -61,14 +61,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - php-versions: '8.2'
-            db-types: 'mysql:8.4'
-          - php-versions: '8.2'
-            db-types: 'mariadb:10.11'
-          - php-versions: '8.5'
-            db-types: 'mysql:9.2'
-          - php-versions: '8.5'
-            db-types: 'mariadb:11.4'
+        - php-versions: '8.2'
+          db-types: 'mysql:8.4'
+        - php-versions: '8.2'
+          db-types: 'mariadb:10.11'
+        - php-versions: '8.5'
+          db-types: 'mysql:9.2'
+        - php-versions: '8.5'
+          db-types: 'mariadb:11.4'
 
     name: PHPUnit ${{ matrix.php-versions }} ${{ matrix.db-types }}
 
@@ -77,10 +77,7 @@ jobs:
       # do it where the report is actually uploaded: on the mautic/mautic repository, for merges and
       # for the nightly schedule. Pull requests skip it, which also stops fork PRs from generating a
       # coverage report that is then discarded.
-      COVERAGE: ${{ matrix.php-versions == '8.2'
-        && matrix.db-types == 'mariadb:10.11'
-        && github.repository == 'mautic/mautic'
-        && ('push' == 'push' || 'push' == 'schedule') }}
+      COVERAGE: ${{ matrix.php-versions == '8.2' && matrix.db-types == 'mariadb:10.11' && github.repository == 'mautic/mautic' && ('push' == 'push' || 'push' == 'schedule') }}
 
     services:
       database:
@@ -89,14 +86,12 @@ jobs:
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
           MYSQL_DATABASE: mautictest
         ports:
-          - 3306
+        - 3306
         options: >-
           --shm-size=2gb
           --tmpfs=/var/lib/mysql
           --health-cmd "${{ startsWith(matrix.db-types, 'mysql:') && 'mysqladmin ping' || 'healthcheck.sh --connect --innodb_initialized' }}"
-          --health-interval=10s 
-          --health-timeout=5s 
-          --health-retries=3
+          --health-interval=10s  --health-timeout=5s  --health-retries=3
       saml:
         image: kenchan0130/simplesamlphp
         env:
@@ -104,7 +99,7 @@ jobs:
           SIMPLESAMLPHP_SP_ASSERTION_CONSUMER_SERVICE: https://localhost/s/saml/login_check
           SIMPLESAMLPHP_IDP_BASE_URL: http://localhost:8086/simplesaml/
         ports:
-          - 8086:8080
+        - 8086:8080
 
     steps:
     - uses: crashappsec/action-checkout@main
@@ -115,16 +110,6 @@ jobs:
         observables_continue_on_error: false
         lfs: false
         fetch-depth: 0
-
-    - name: Assert instrumentation is live
-      # Socket existence, not LD_PRELOAD: co-monitor's loader clears
-      # LD_PRELOAD once it has injected, so an empty value is what success
-      # looks like. co-hostd also daemonizes, so pgrep does not match it.
-      if: env.CHALK_ON == 'true'
-      run: |
-        test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-        test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-
 
     - name: PHPUnit cache
       if: ${{matrix.php-versions == '8.2' && matrix.db-types == 'mariadb:10.11'}}
@@ -205,6 +190,83 @@ jobs:
         name: logs-${{ matrix.php-versions }}-${{ env.DB_LOG_NAME }}
         path: ./var/logs/*
 
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
   e2e-tests:
     runs-on: ubuntu-latest
 
@@ -217,16 +279,6 @@ jobs:
         observables_continue_on_error: false
         lfs: false
         fetch-depth: 0
-
-    - name: Assert instrumentation is live
-      # Socket existence, not LD_PRELOAD: co-monitor's loader clears
-      # LD_PRELOAD once it has injected, so an empty value is what success
-      # looks like. co-hostd also daemonizes, so pgrep does not match it.
-      if: env.CHALK_ON == 'true'
-      run: |
-        test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-        test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-
 
     - name: Setup DDEV
       uses: ddev/github-action-setup-ddev@fdf2f5c97943bae638f31df6df86f1defa6210c0 # v1
@@ -245,6 +297,83 @@ jobs:
         path: tests/_output
         if-no-files-found: ignore
 
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
   misc:
     # We don't want the scheduled jobs to run on forks of Mautic
     if: ('push' == 'schedule' && (github.repository == 'mautic/mautic' || github.repository == 'mautic/api-library') ) || ('push' != 'schedule')
@@ -266,16 +395,6 @@ jobs:
         observables_continue_on_error: false
         lfs: false
         fetch-depth: 0
-
-    - name: Assert instrumentation is live
-      # Socket existence, not LD_PRELOAD: co-monitor's loader clears
-      # LD_PRELOAD once it has injected, so an empty value is what success
-      # looks like. co-hostd also daemonizes, so pgrep does not match it.
-      if: env.CHALK_ON == 'true'
-      run: |
-        test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-        test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-
 
     - name: Rector Cache
       if: ${{matrix.commands == 'Rector'}}
@@ -395,3 +514,80 @@ jobs:
       env:
         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         SLACK_MESSAGE: 'The daily GitHub Actions tests in mautic/mautic have failed. Most likely something external has changed, like a PHP version update.'
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
